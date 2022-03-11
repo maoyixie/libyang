@@ -860,6 +860,57 @@ lyplg_type_identity_isderived(const struct lysc_ident *base, const struct lysc_i
 }
 
 LIBYANG_API_DEF LY_ERR
+lyplg_type_identity_find(const char *value, size_t value_len, LY_VALUE_FORMAT format, void *prefix_data,
+        const struct ly_ctx *ctx, const struct lysc_node *ctx_node, struct lysc_ident **ident, struct ly_err_item **err)
+{
+    const char *id_name, *prefix = value;
+    size_t id_len, prefix_len;
+    const struct lys_module *mod;
+    LY_ARRAY_COUNT_TYPE u;
+    struct lysc_ident *id, *identities;
+
+    /* locate prefix if any */
+    for (prefix_len = 0; (prefix_len < value_len) && (value[prefix_len] != ':'); ++prefix_len) {}
+    if (prefix_len < value_len) {
+        id_name = &value[prefix_len + 1];
+        id_len = value_len - (prefix_len + 1);
+    } else {
+        prefix_len = 0;
+        id_name = value;
+        id_len = value_len;
+    }
+
+    if (!id_len) {
+        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL, "Invalid empty identityref value.");
+    }
+
+    mod = lyplg_type_identity_module(ctx, ctx_node, prefix, prefix_len, format, prefix_data);
+    if (!mod) {
+        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL,
+                "Invalid identityref \"%.*s\" value - unable to map prefix to YANG schema.", (int)value_len, value);
+    }
+
+    id = NULL;
+    identities = mod->identities;
+    LY_ARRAY_FOR(identities, u) {
+        if (!ly_strncmp(identities[u].name, id_name, id_len)) {
+            /* we have match */
+            id = &identities[u];
+            break;
+        }
+    }
+    if (!id) {
+        /* no match */
+        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL,
+                "Invalid identityref \"%.*s\" value - identity not found in module \"%s\".",
+                (int)value_len, value, mod->name);
+    }
+
+    *ident = id;
+    return LY_SUCCESS;
+}
+
+LIBYANG_API_DEF LY_ERR
 lyplg_type_resolve_leafref(const struct lysc_type_leafref *lref, const struct lyd_node *node, struct lyd_value *value,
         const struct lyd_node *tree, struct lyd_node **target, char **errmsg)
 {

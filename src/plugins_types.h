@@ -1128,6 +1128,22 @@ LIBYANG_API_DECL LY_ERR lyplg_type_parse_dec64(uint8_t fraction_digits, const ch
 LIBYANG_API_DECL LY_ERR lyplg_type_identity_isderived(const struct lysc_ident *base, const struct lysc_ident *derived);
 
 /**
+ * @brief Find the matching identity to the given identityref string value.
+ *
+ * @param[in] value Identityref value.
+ * @param[in] value_len Length of @p value.
+ * @param[in] format Value format.
+ * @param[in] prefix_data Format-specific data for resolving prefixes.
+ * @param[in] ctx libyang context.
+ * @param[in] ctx_node Context node for resolving the prefixes.
+ * @param[out] ident Found identity.
+ * @param[out] err Error information on error.
+ * @return LY_ERR value.
+ */
+LIBYANG_API_DECL LY_ERR lyplg_type_identity_find(const char *value, size_t value_len, LY_VALUE_FORMAT format, void *prefix_data,
+        const struct ly_ctx *ctx, const struct lysc_node *ctx_node, struct lysc_ident **ident, struct ly_err_item **err);
+
+/**
  * @brief Data type validator for a range/length-restricted values.
  *
  * @param[in] basetype Base built-in type of the type with the range specified to get know if the @p range structure represents range or length restriction.

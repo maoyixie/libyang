@@ -63,70 +63,6 @@ identityref_ident2str(const struct lysc_ident *ident, LY_VALUE_FORMAT format, vo
 }
 
 /**
- * @brief Convert a string identityref value to matching identity.
- *
- * @param[in] value Identityref value.
- * @param[in] value_len Length of @p value.
- * @param[in] format Value format.
- * @param[in] prefix_data Format-specific data for resolving prefixes.
- * @param[in] ctx libyang context.
- * @param[in] ctx_node Context node for resolving the prefixes.
- * @param[out] ident Found identity.
- * @param[out] err Error information on error.
- * @return LY_ERR value.
- */
-static LY_ERR
-identityref_str2ident(const char *value, size_t value_len, LY_VALUE_FORMAT format, void *prefix_data,
-        const struct ly_ctx *ctx, const struct lysc_node *ctx_node, struct lysc_ident **ident, struct ly_err_item **err)
-{
-    const char *id_name, *prefix = value;
-    size_t id_len, prefix_len;
-    const struct lys_module *mod;
-    LY_ARRAY_COUNT_TYPE u;
-    struct lysc_ident *id, *identities;
-
-    /* locate prefix if any */
-    for (prefix_len = 0; (prefix_len < value_len) && (value[prefix_len] != ':'); ++prefix_len) {}
-    if (prefix_len < value_len) {
-        id_name = &value[prefix_len + 1];
-        id_len = value_len - (prefix_len + 1);
-    } else {
-        prefix_len = 0;
-        id_name = value;
-        id_len = value_len;
-    }
-
-    if (!id_len) {
-        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL, "Invalid empty identityref value.");
-    }
-
-    mod = lyplg_type_identity_module(ctx, ctx_node, prefix, prefix_len, format, prefix_data);
-    if (!mod) {
-        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL,
-                "Invalid identityref \"%.*s\" value - unable to map prefix to YANG schema.", (int)value_len, value);
-    }
-
-    id = NULL;
-    identities = mod->identities;
-    LY_ARRAY_FOR(identities, u) {
-        if (!ly_strncmp(identities[u].name, id_name, id_len)) {
-            /* we have match */
-            id = &identities[u];
-            break;
-        }
-    }
-    if (!id) {
-        /* no match */
-        return ly_err_new(err, LY_EVALID, LYVE_DATA, NULL, NULL,
-                "Invalid identityref \"%.*s\" value - identity not found in module \"%s\".",
-                (int)value_len, value, mod->name);
-    }
-
-    *ident = id;
-    return LY_SUCCESS;
-}
-
-/**
  * @brief Check that an identityref is derived from the type base.
  *
  * @param[in] ident Derived identity to which identityref points.
@@ -238,7 +174,7 @@ lyplg_type_store_identityref(const struct ly_ctx *ctx, const struct lysc_type *t
     LY_CHECK_GOTO(ret, cleanup);
 
     /* find a matching identity */
-    ret = identityref_str2ident(value, value_len, format, prefix_data, ctx, ctx_node, &ident, err);
+    ret = lyplg_type_identity_find(value, value_len, format, prefix_data, ctx, ctx_node, &ident, err);
     LY_CHECK_GOTO(ret, cleanup);
 
     /* check if the identity is enabled */
