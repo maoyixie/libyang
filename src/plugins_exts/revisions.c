@@ -20,6 +20,60 @@
 #define REVISIONS_REV "2021-11-04"
 
 /**
+ * @brief Genralized code for the ::lyplg_ext_compile_clb callbacks below.
+ *
+ * The function does only a check of the extension instance placement in the specified parent_stmt,
+ * which are not compiled. Therefore the function is actually supposed to always fail.
+ *
+ * Implementation of ::lyplg_ext_compile_clb callback set as lyext_plugin::compile.
+ */
+static LY_ERR
+check_substmt_compile(struct lysc_ctx *cctx, const struct lysp_ext_instance *p_ext, struct lysc_ext_instance *c_ext, enum ly_stmt parent_stmt)
+{
+    /*
+     * This function is actually supposed to fail - the extension is expected in the revision statement which is not being
+     * compiled. Instead, the processing of these extension instances are directly integrated into the libyang core code.
+     */
+    if (c_ext->parent_stmt != parent_stmt) {
+        lyplg_ext_log(c_ext, LY_LLERR, LY_EVALID, lysc_ctx_get_path(cctx),
+                "Extension %s is allowed only as a substatement of the %s statement, but it is placed in \"%s\" statement.",
+                p_ext->name, ly_stmt2str(parent_stmt), ly_stmt2str(c_ext->parent_stmt));
+        return LY_EVALID;
+    } else {
+        lyplg_ext_log(c_ext, LY_LLERR, LY_EVALID, lysc_ctx_get_path(cctx), "Unexpected use of %s extension.", p_ext->name, ly_stmt2str(c_ext->parent_stmt));
+        return LY_EINT;
+    }
+}
+
+/**
+ * @brief Compile check for revision-date-or-label extension instances.
+ *
+ * The extension instances in import statement are not compiled, so this callback is used
+ * only to fail when the extension is placed somewhere else.
+ *
+ * Implementation of ::lyplg_ext_compile_clb callback set as lyext_plugin::compile.
+ */
+static LY_ERR
+revision_substmt_compile(struct lysc_ctx *cctx, const struct lysp_ext_instance *p_ext, struct lysc_ext_instance *c_ext)
+{
+    return check_substmt_compile(cctx, p_ext, c_ext, LY_STMT_REVISION);
+}
+
+/**
+ * @brief Compile check for non-backward-compatible and revision-label extension instances.
+ *
+ * The extension instances in import statement are not compiled, so this callback is used
+ * only to fail when the extension is placed somewhere else.
+ *
+ * Implementation of ::lyplg_ext_compile_clb callback set as lyext_plugin::compile.
+ */
+static LY_ERR
+import_substmt_compile(struct lysc_ctx *cctx, const struct lysp_ext_instance *p_ext, struct lysc_ext_instance *c_ext)
+{
+    return check_substmt_compile(cctx, p_ext, c_ext, LY_STMT_IMPORT);
+}
+
+/**
  * @brief Compile revision-label-scheme extension instances.
  *
  * Implementation of ::lyplg_ext_compile_clb callback set as lyext_plugin::compile.
@@ -92,10 +146,43 @@ const struct lyplg_ext_record plugins_revisions[] = {
     {
         .module = REVISIONS_NAME,
         .revision = REVISIONS_REV,
+        .name = "non-backwards-compatible",
+
+        .plugin.id = "libyang 2 - revisions, version 1",
+        .plugin.compile = &import_substmt_compile,
+        .plugin.sprinter = NULL,
+        .plugin.free = NULL,
+        .plugin.parse = NULL,
+        .plugin.validate = NULL
+    }, {
+        .module = REVISIONS_NAME,
+        .revision = REVISIONS_REV,
+        .name = "revision-label",
+
+        .plugin.id = "libyang 2 - revisions, version 1",
+        .plugin.compile = &revision_substmt_compile,
+        .plugin.sprinter = NULL,
+        .plugin.free = NULL,
+        .plugin.parse = NULL,
+        .plugin.validate = NULL
+    }, {
+        .module = REVISIONS_NAME,
+        .revision = REVISIONS_REV,
         .name = "revision-label-scheme",
 
         .plugin.id = "libyang 2 - revisions, version 1",
         .plugin.compile = &revision_label_scheme_compile,
+        .plugin.sprinter = NULL,
+        .plugin.free = NULL,
+        .plugin.parse = NULL,
+        .plugin.validate = NULL
+    }, {
+        .module = REVISIONS_NAME,
+        .revision = REVISIONS_REV,
+        .name = "revision-or-derived",
+
+        .plugin.id = "libyang 2 - revisions, version 1",
+        .plugin.compile = &import_substmt_compile,
         .plugin.sprinter = NULL,
         .plugin.free = NULL,
         .plugin.parse = NULL,

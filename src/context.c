@@ -197,10 +197,12 @@ ly_ctx_load_module(struct ly_ctx *ctx, const char *name, const char *revision, c
     struct lys_module *mod = NULL;
     LY_ERR ret = LY_SUCCESS;
 
+    LY_ARRAY_STATIC(revisions, const char *, 1, {revision});
+
     LY_CHECK_ARG_RET(ctx, ctx, name, NULL);
 
     /* load and parse */
-    ret = lys_parse_load(ctx, name, revision, &ctx->unres.creating, &mod);
+    ret = lys_parse_load(ctx, name, revision ? revisions : NULL, 0, &ctx->unres.creating, &mod);
     LY_CHECK_GOTO(ret, cleanup);
 
     /* implement */
@@ -674,6 +676,18 @@ ly_ctx_get_module_imp_clb(const struct ly_ctx *ctx, void **user_data)
     return ctx->imp_clb;
 }
 
+LIBYANG_API_DECL
+ly_module_imp_derived_clb
+ly_ctx_get_module_imp_derived_clb(const struct ly_ctx *ctx, void **user_data)
+{
+    LY_CHECK_ARG_RET(ctx, ctx, NULL);
+
+    if (user_data) {
+        *user_data = ctx->imp_clb_der_data;
+    }
+    return ctx->imp_der_clb;
+}
+
 LIBYANG_API_DEF void
 ly_ctx_set_module_imp_clb(struct ly_ctx *ctx, ly_module_imp_clb clb, void *user_data)
 {
@@ -681,6 +695,15 @@ ly_ctx_set_module_imp_clb(struct ly_ctx *ctx, ly_module_imp_clb clb, void *user_
 
     ctx->imp_clb = clb;
     ctx->imp_clb_data = user_data;
+}
+
+LIBYANG_API_DECL void
+ly_ctx_set_module_imp_derived_clb(struct ly_ctx *ctx, ly_module_imp_derived_clb clb, void *user_data)
+{
+    LY_CHECK_ARG_RET(ctx, ctx, );
+
+    ctx->imp_der_clb = clb;
+    ctx->imp_clb_der_data = user_data;
 }
 
 LIBYANG_API_DEF ly_ext_data_clb
@@ -751,40 +774,60 @@ ly_ctx_get_module_by_iter(const struct ly_ctx *ctx, const char *key, size_t key_
  * @return Matching module if any.
  */
 static struct lys_module *
-ly_ctx_get_module_by(const struct ly_ctx *ctx, const char *key, size_t key_offset, const char *revision)
+ly_ctx_get_module_by(const struct ly_ctx *ctx, const char *key, size_t key_offset, const char **revisions, int revision_or_derived)
 {
     struct lys_module *mod;
     uint32_t index = 0;
+    LY_ARRAY_COUNT_TYPE i;
 
     while ((mod = ly_ctx_get_module_by_iter(ctx, key, 0, key_offset, &index))) {
-        if (!revision) {
+        if (!revisions) {
             if (!mod->revision) {
                 /* found requested module without revision */
                 return mod;
             }
         } else {
-            if (mod->revision && !strcmp(mod->revision, revision)) {
-                /* found requested module of the specific revision */
-                return mod;
+            LY_ARRAY_FOR(revisions, i) {
+                if (revision_or_derived) {
+                    if (lysp_match_revision(mod->parsed, revisions[i])) {
+                        /* match based on revision-label */
+                        return mod;
+                    }
+                } else {
+                    if (mod->revision && !strcmp(mod->revision, revisions[i])) {
+                        /* found requested module of the specific revision */
+                        return mod;
+                    }
+                }
             }
         }
     }
-
     return NULL;
 }
 
 LIBYANG_API_DEF struct lys_module *
 ly_ctx_get_module_ns(const struct ly_ctx *ctx, const char *ns, const char *revision)
 {
+    LY_ARRAY_STATIC(revisions, const char *, 1, {revision});
+
     LY_CHECK_ARG_RET(ctx, ctx, ns, NULL);
-    return ly_ctx_get_module_by(ctx, ns, offsetof(struct lys_module, ns), revision);
+    return ly_ctx_get_module_by(ctx, ns, offsetof(struct lys_module, ns), revision ? revisions : NULL, 0);
 }
 
 LIBYANG_API_DEF struct lys_module *
 ly_ctx_get_module(const struct ly_ctx *ctx, const char *name, const char *revision)
 {
+    LY_ARRAY_STATIC(revisions, const char *, 1, {revision});
+
     LY_CHECK_ARG_RET(ctx, ctx, name, NULL);
-    return ly_ctx_get_module_by(ctx, name, offsetof(struct lys_module, name), revision);
+    return ly_ctx_get_module_by(ctx, name, offsetof(struct lys_module, name), revision ? revisions : NULL, 0);
+}
+
+LIBYANG_API_DEF struct lys_module *
+ly_ctx_get_module_derived(const struct ly_ctx *ctx, const char *name, const char **revisions)
+{
+    LY_CHECK_ARG_RET(ctx, ctx, name, NULL);
+    return ly_ctx_get_module_by(ctx, name, offsetof(struct lys_module, name), revisions, 1);
 }
 
 /**

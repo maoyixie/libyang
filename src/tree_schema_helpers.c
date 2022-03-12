@@ -100,6 +100,149 @@ error:
     return LY_EINVAL;
 }
 
+/**
+ * @brief Check if the module imports a module of the specified name.
+ * @param[in] mod Parsed module to check.
+ * @param[in] name The name of the imported module to search for.
+ * @return LY_ENOTFOUND
+ * @return LY_SUCCESS
+ */
+static LY_ERR
+lysp_has_import(const struct lysp_module *mod, const char *name)
+{
+    LY_ARRAY_COUNT_TYPE i;
+
+    LY_ARRAY_FOR(mod->imports, i) {
+        if (strcmp(mod->imports[i].name, name)) {
+            return LY_SUCCESS;
+        }
+    }
+
+    return LY_ENOTFOUND;
+}
+
+/**
+ * @brief Get ietf-yang-revisions:revision-label if present in revision's extensions
+ *
+ * @param[in] mod Parsed module for the context to resolve prefixes in revision
+ * @param[in] rev Revision statement to examine
+ * @param[in] check Flag to perform checks of the correct use of the revision-label statement.
+ *     These checks are supposed to be performed at least once when the schema is parsed/compiled.
+ * @param[out] label Returns pointer to the revision-label, the value is not a copy (points directly into the extension)
+ *
+ * @return LY_SUCCESS when the ietf-yang-revisions:revision-label found and all the checks passed (if requested)
+ * @return LY_ENOTFOUND in case the revision does not contain ietf-yang-revisions:revision-label
+ * @return LY_EVALID if checks requested and failed
+ */
+static LY_ERR
+revisions_get_label(const struct lysp_module *mod, const struct lysp_revision *rev, int check, const char **label)
+{
+    LY_ARRAY_COUNT_TYPE i;
+    const char *id, *prefix;
+    size_t prefix_len;
+    const struct lys_module *prefix_mod;
+
+    assert(label);
+    *label = NULL;
+
+    LY_ARRAY_FOR(rev->exts, i) {
+        prefix = rev->exts[i].name;
+
+        /* locate extension's prefix */
+        id = strchr(prefix, ':');
+        if (!id) {
+            /* no prefix ?!? */
+            continue;
+        }
+
+        prefix_len = id - prefix;
+        id++;
+
+        if (!strcmp(id, "revision-label")) {
+            prefix_mod = ly_resolve_prefix(mod->mod->ctx, prefix, prefix_len, LY_VALUE_SCHEMA, mod);
+            if (prefix_mod && !strcmp(prefix_mod->name, "ietf-yang-revisions")) {
+                if (check && *label) {
+                    LOGVAL(mod->mod->ctx, LYVE_SEMANTICS, "Extension %s is instantiated multiple times.", rev->exts[i].name);
+                    return LY_EVALID;
+                }
+                *label = rev->exts[i].argument;
+                if (!check) {
+                    /* label found, do not continue with check of multiple revision labels */
+                    break;
+                }
+            }
+        }
+    }
+
+    return (*label == NULL) ? LY_ENOTFOUND : LY_SUCCESS;
+}
+
+LY_ERR
+lysp_check_revisions(const struct lysp_module *mod)
+{
+    LY_ERR ret = LY_SUCCESS;
+    LY_ARRAY_COUNT_TYPE i;
+    const char *label = NULL;
+    struct ly_set labels = {0};
+    uint32_t c;
+
+    if (lysp_has_import(mod, "ietf-yang-revisions")) {
+        /* ietf-yang-revisions module not used */
+        return LY_SUCCESS;
+    }
+
+    LY_ARRAY_FOR(mod->revs, i) {
+        ret = revisions_get_label(mod, &mod->revs[i], 1, &label);
+        if (ret == LY_EVALID) {
+            ret = LY_EVALID;
+            goto cleanup;
+        } else if (ret == LY_ENOTFOUND) {
+            ret = LY_SUCCESS;
+            continue;
+        }
+        /* remember the label to check its uniqueness
+         * NOTE - here we use the dictionary behavior where the same string is always the same pointer! */
+        c = labels.count;
+        LY_CHECK_GOTO(ret = ly_set_add(&labels, (void *)label, 0, NULL), cleanup);
+        if (c == labels.count) {
+            LOGVAL(mod->mod->ctx, LYVE_SEMANTICS, "Duplicated ietf-yang-revisions:revision-label \"%s\" amongs multiple revisions.", label);
+            ret = LY_EVALID;
+            goto cleanup;
+        }
+    }
+
+cleanup:
+    ly_set_erase(&labels, NULL);
+    return ret;
+}
+
+LY_ERR
+lysp_match_revision(const struct lysp_module *mod, const char *label)
+{
+    LY_ARRAY_COUNT_TYPE i;
+    const char *cur_label;
+
+    LY_CHECK_ARG_RET(NULL, mod, label, LY_EINVAL);
+
+    if (lysp_has_import(mod, "ietf-yang-revisions")) {
+        /* ietf-yang-revisions module not used */
+        return LY_SUCCESS;
+    }
+
+    LY_ARRAY_FOR(mod->revs, i) {
+        if (revisions_get_label(mod, &mod->revs[i], 0, &cur_label) == LY_ENOTFOUND) {
+            continue;
+        }
+
+        if (!strcmp(label, cur_label)) {
+            /* match */
+            return LY_SUCCESS;
+        }
+    }
+
+    return LY_ENOTFOUND;
+}
+
 void
 lysp_sort_revisions(struct lysp_revision *revs)
 {
@@ -658,9 +801,10 @@ cleanup:
 
 struct lysp_load_module_check_data {
     const char *name;
-    const char *revision;
+    const char **revisions;
     const char *path;
     const char *submoduleof;
+    int revision_or_derived;
 };
 
 static LY_ERR
@@ -671,6 +815,7 @@ lysp_load_module_check(const struct ly_ctx *ctx, struct lysp_module *mod, struct
     uint8_t latest_revision;
     size_t len;
     struct lysp_revision *revs;
+    LY_ARRAY_COUNT_TYPE i;
 
     name = mod ? mod->mod->name : submod->name;
     revs = mod ? mod->revs : submod->revs;
@@ -683,13 +828,31 @@ lysp_load_module_check(const struct ly_ctx *ctx, struct lysp_module *mod, struct
             return LY_EINVAL;
         }
     }
-    if (info->revision) {
+    if (LY_ARRAY_COUNT(info->revisions)) {
         /* check revision of the parsed model */
-        if (!revs || strcmp(info->revision, revs[0].date)) {
-            LOGERR(ctx, LY_EINVAL, "Module \"%s\" parsed with the wrong revision (\"%s\" instead \"%s\").", name,
-                    revs ? revs[0].date : "none", info->revision);
+        if (revs) {
+            if (info->revision_or_derived) {
+                int match = 0;
+                LY_ARRAY_FOR(info->revisions, i) {
+                    if (lysp_match_revision(mod, info->revisions[i])) {
+                        match = 1;
+                        break;
+                    }
+                }
+                if (!match) {
+                    LOGERR(ctx, LY_EINVAL, "Module \"%s\" is not derived from the required revision(s).", name);
+                    return LY_EINVAL;
+                }
+            } else if (strcmp(info->revisions[0], revs[0].date)) {
+                LOGERR(ctx, LY_EINVAL, "Module \"%s\" parsed with the wrong revision (\"%s\" instead \"%s\").", name,
+                        revs ? revs[0].date : "none", info->revisions[0]);
+                return LY_EINVAL;
+            }
+        } else {
+            LOGERR(ctx, LY_EINVAL, "Module \"%s\" parsed with the wrong revision (\"none\" instead \"%s\").", name, info->revisions[0]);
             return LY_EINVAL;
         }
+
     } else if (!latest_revision) {
         /* do not log, we just need to drop the schema and use the latest revision from the context */
         return LY_EEXIST;
@@ -756,7 +919,7 @@ lysp_load_module_check(const struct ly_ctx *ctx, struct lysp_module *mod, struct
  * @return LY_ERR on error.
  */
 static LY_ERR
-lys_parse_localfile(struct ly_ctx *ctx, const char *name, const char *revision, struct lys_parser_ctx *main_ctx,
+lys_parse_localfile(struct ly_ctx *ctx, const char *name, const char **revisions, int revision_or_derived, struct lys_parser_ctx *main_ctx,
         const char *main_name, ly_bool required, struct ly_set *new_mods, void **result)
 {
     struct ly_in *in;
@@ -766,12 +929,20 @@ lys_parse_localfile(struct ly_ctx *ctx, const char *name, const char *revision, 
     LY_ERR ret = LY_SUCCESS;
     struct lysp_load_module_check_data check_data = {0};
 
-    LY_CHECK_RET(lys_search_localfile(ly_ctx_get_searchdirs(ctx), !(ctx->flags & LY_CTX_DISABLE_SEARCHDIR_CWD), name,
-            revision, &filepath, &format));
+    if (revision_or_derived) {
+        /* TODO */
+    } else {
+        LY_CHECK_RET(lys_search_localfile(ly_ctx_get_searchdirs(ctx), !(ctx->flags & LY_CTX_DISABLE_SEARCHDIR_CWD), name,
+                LY_ARRAY_COUNT(revisions) ? revisions[0] : NULL, &filepath, &format));
+    }
     if (!filepath) {
         if (required) {
-            LOGERR(ctx, LY_ENOTFOUND, "Data model \"%s%s%s\" not found in local searchdirs.", name, revision ? "@" : "",
-                    revision ? revision : "");
+            if (revision_or_derived) {
+                LOGERR(ctx, LY_ENOTFOUND, "Data model \"%s\" not found in local searchdirs.", name);
+            } else {
+                LOGERR(ctx, LY_ENOTFOUND, "Data model \"%s%s%s\" not found in local searchdirs.", name, LY_ARRAY_COUNT(revisions) ? "@" : "",
+                        LY_ARRAY_COUNT(revisions) ? revisions[0] : "");
+            }
         }
         return LY_ENOTFOUND;
     }
@@ -782,7 +953,8 @@ lys_parse_localfile(struct ly_ctx *ctx, const char *name, const char *revision, 
     LY_CHECK_ERR_GOTO(ret = ly_in_new_filepath(filepath, 0, &in),
             LOGERR(ctx, ret, "Unable to create input handler for filepath %s.", filepath), cleanup);
     check_data.name = name;
-    check_data.revision = revision;
+    check_data.revisions = revisions;
+    check_data.revision_or_derived = revision_or_derived;
     check_data.path = filepath;
     check_data.submoduleof = main_name;
     if (main_ctx) {
@@ -809,7 +981,9 @@ cleanup:
  *
  * @param[in] ctx libyang context where to work.
  * @param[in] name Name of module to load.
- * @param[in] revision Revision of module to load.
+ * @param[in] revisions ([Sized array](@ref sizedarrays)) of the revision(s) restriction to apply (see @p revision_or_derived).
+ * @param[in] revision_or_derived Flag to apply @p revisions restriction. If set, not only the module of the required revision
+ * matches, but also the modules derived from such a revision (the revision is placed in the module's revisions history).
  * @param[in] mod_latest Module with the latest revision found in context, otherwise set to NULL.
  * @param[in,out] new_mods Set of all the new mods added to the context. Includes this module and all of its imports.
  * @param[out] mod Loaded module.
@@ -817,9 +991,10 @@ cleanup:
  * @return LY_ERR on error.
  */
 static LY_ERR
-lys_parse_load_from_clb_or_file(struct ly_ctx *ctx, const char *name, const char *revision,
+lys_parse_load_from_clb_or_file(struct ly_ctx *ctx, const char *name, const char **revisions, int revision_or_derived,
         struct lys_module *mod_latest, struct ly_set *new_mods, struct lys_module **mod)
 {
+    LY_ERR rc;
     const char *module_data = NULL;
     LYS_INFORMAT format = LYS_IN_UNKNOWN;
 
@@ -829,7 +1004,7 @@ lys_parse_load_from_clb_or_file(struct ly_ctx *ctx, const char *name, const char
 
     *mod = NULL;
 
-    if (mod_latest && (!ctx->imp_clb || (mod_latest->latest_revision & LYS_MOD_LATEST_IMPCLB)) &&
+    if (mod_latest && (!(ctx->imp_clb || ctx->imp_der_clb) || (mod_latest->latest_revision & LYS_MOD_LATEST_IMPCLB)) &&
             ((ctx->flags & LY_CTX_DISABLE_SEARCHDIRS) || (mod_latest->latest_revision & LYS_MOD_LATEST_SEARCHDIRS))) {
         /* we are not able to find a newer revision */
         return LY_SUCCESS;
@@ -839,10 +1014,17 @@ lys_parse_load_from_clb_or_file(struct ly_ctx *ctx, const char *name, const char
 search_clb:
         /* check there is a callback and should be called */
         if (ctx->imp_clb && (!mod_latest || !(mod_latest->latest_revision & LYS_MOD_LATEST_IMPCLB))) {
-            if (!ctx->imp_clb(name, revision, NULL, NULL, ctx->imp_clb_data, &format, &module_data, &module_data_free)) {
+            if (revision_or_derived) {
+                rc = ctx->imp_der_clb(name, revisions, ctx->imp_clb_data, &format, &module_data, &module_data_free);
+            } else {
+                rc = ctx->imp_clb(name, LY_ARRAY_COUNT(revisions) ? revisions[0] : NULL, NULL, NULL, ctx->imp_clb_data,
+                        &format, &module_data, &module_data_free);
+            }
+            if (rc == LY_SUCCESS) {
                 LY_CHECK_RET(ly_in_new_memory(module_data, &in));
                 check_data.name = name;
-                check_data.revision = revision;
+                check_data.revisions = revisions;
+                check_data.revision_or_derived = revision_or_derived;
                 lys_parse_in(ctx, in, format, lysp_load_module_check, &check_data, new_mods, mod);
                 ly_in_free(in, 0);
                 if (module_data_free) {
@@ -850,7 +1032,7 @@ search_clb:
                 }
             }
         }
-        if (*mod && !revision) {
+        if (*mod && !LY_ARRAY_COUNT(revisions)) {
             /* we got the latest revision module from the callback */
             (*mod)->latest_revision |= LYS_MOD_LATEST_IMPCLB;
         } else if (!*mod && !(ctx->flags & LY_CTX_PREFER_SEARCHDIRS)) {
@@ -861,9 +1043,9 @@ search_file:
         /* check we can use searchdirs and that we should */
         if (!(ctx->flags & LY_CTX_DISABLE_SEARCHDIRS) &&
                 (!mod_latest || !(mod_latest->latest_revision & LYS_MOD_LATEST_SEARCHDIRS))) {
-            lys_parse_localfile(ctx, name, revision, NULL, NULL, mod_latest ? 0 : 1, new_mods, (void **)mod);
+            lys_parse_localfile(ctx, name, revisions, revision_or_derived, NULL, NULL, mod_latest ? 0 : 1, new_mods, (void **)mod);
         }
-        if (*mod && !revision) {
+        if (*mod && !LY_ARRAY_COUNT(revisions)) {
             /* we got the latest revision module in the searchdirs */
             (*mod)->latest_revision |= LYS_MOD_LATEST_IMPCLB;
         } else if (!*mod && (ctx->flags & LY_CTX_PREFER_SEARCHDIRS)) {
@@ -937,8 +1119,8 @@ lys_check_circular_dependency(struct ly_ctx *ctx, struct lys_module **mod)
 }
 
 LY_ERR
-lys_parse_load(struct ly_ctx *ctx, const char *name, const char *revision, struct ly_set *new_mods,
-        struct lys_module **mod)
+lys_parse_load(struct ly_ctx *ctx, const char *name, const char **revisions, int revision_or_derived,
+        struct ly_set *new_mods, struct lys_module **mod)
 {
     struct lys_module *mod_latest = NULL;
 
@@ -947,9 +1129,13 @@ lys_parse_load(struct ly_ctx *ctx, const char *name, const char *revision, struc
     /*
      * Try to get the module from the context.
      */
-    if (revision) {
+    if (LY_ARRAY_COUNT(revisions)) {
         /* Get the specific revision. */
-        *mod = ly_ctx_get_module(ctx, name, revision);
+        if (revision_or_derived) {
+            *mod = ly_ctx_get_module_derived(ctx, name, revisions);
+        } else {
+            *mod = ly_ctx_get_module(ctx, name, revisions[0]);
+        }
     } else {
         /* Get the requested module in a suitable revision in the context. */
         *mod = lys_get_module_without_revision(ctx, name);
@@ -964,7 +1150,7 @@ lys_parse_load(struct ly_ctx *ctx, const char *name, const char *revision, struc
 
     if (!*mod) {
         /* No suitable module in the context, try to load it. */
-        LY_CHECK_RET(lys_parse_load_from_clb_or_file(ctx, name, revision, mod_latest, new_mods, mod));
+        LY_CHECK_RET(lys_parse_load_from_clb_or_file(ctx, name, revisions, revision_or_derived, mod_latest, new_mods, mod));
         if (!*mod && !mod_latest) {
             LOGVAL(ctx, LYVE_REFERENCE, "Loading \"%s\" module failed.", name);
             return LY_EVALID;
@@ -979,7 +1165,7 @@ lys_parse_load(struct ly_ctx *ctx, const char *name, const char *revision, struc
             assert(mod_latest->latest_revision & LYS_MOD_LATEST_REV);
             mod_latest->latest_revision |= LYS_MOD_LATEST_SEARCHDIRS;
             *mod = mod_latest;
-        } else if (*mod && !revision && ((*mod)->latest_revision & LYS_MOD_LATEST_REV)) {
+        } else if (*mod && !revisions && ((*mod)->latest_revision & LYS_MOD_LATEST_REV)) {
             (*mod)->latest_revision |= LYS_MOD_LATEST_SEARCHDIRS;
         }
     }
@@ -1193,9 +1379,12 @@ search_clb:
                 if (ctx->imp_clb(PARSER_CUR_PMOD(pctx)->mod->name, NULL, inc->name,
                         inc->rev[0] ? inc->rev : NULL, ctx->imp_clb_data,
                         &format, &submodule_data, &submodule_data_free) == LY_SUCCESS) {
+                    LY_ARRAY_STATIC(revisions, const char *, 1, {inc->rev});
+
                     LY_CHECK_RET(ly_in_new_memory(submodule_data, &in));
                     check_data.name = inc->name;
-                    check_data.revision = inc->rev[0] ? inc->rev : NULL;
+                    check_data.revisions = inc->rev[0] ? revisions : NULL;
+                    check_data.revision_or_derived = 0;
                     check_data.submoduleof = PARSER_CUR_PMOD(pctx)->mod->name;
                     lys_parse_submodule(ctx, in, format, pctx, lysp_load_module_check, &check_data, new_mods, &submod);
 
@@ -1216,7 +1405,8 @@ search_clb:
 search_file:
             if (!(ctx->flags & LY_CTX_DISABLE_SEARCHDIRS)) {
                 /* submodule was not received from the callback or there is no callback set */
-                lys_parse_localfile(ctx, inc->name, inc->rev[0] ? inc->rev : NULL, pctx,
+                LY_ARRAY_STATIC(revisions, const char *, 1, {inc->rev});
+                lys_parse_localfile(ctx, inc->name, inc->rev[0] ? revisions : NULL, 0, pctx,
                         PARSER_CUR_PMOD(pctx)->mod->name, 1, new_mods, (void **)&submod);
 
                 /* update inc pointer - parsing another (YANG 1.0) submodule can cause injecting

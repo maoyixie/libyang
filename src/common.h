@@ -321,7 +321,9 @@ struct ly_ctx {
     struct ly_set search_paths;       /**< set of directories where to search for schema's imports/includes */
     struct ly_set list;               /**< set of loaded YANG schemas */
     ly_module_imp_clb imp_clb;        /**< optional callback for retrieving missing included or imported models */
+    ly_module_imp_derived_clb imp_der_clb; /**< optional callback for retrieving missing imported models */
     void *imp_clb_data;               /**< optional private data for ::ly_ctx.imp_clb */
+    void *imp_clb_der_data;           /**< optional private data for ::ly_ctx.imp_der_clb */
     struct lys_glob_unres unres;      /**< global unres, should be empty unless there are modules prepared for
                                            compilation if ::LY_CTX_EXPLICIT_COMPILE flag is set */
     uint16_t change_count;            /**< count of changes of the context, on some changes it could be incremented

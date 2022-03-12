@@ -1207,17 +1207,101 @@ cleanup:
     return ret;
 }
 
+/**
+ * @brief Construct revision restrictions of the given import statement.
+ *
+ * Supports ietf-yang-revisions.
+ *
+ * @param[in] ctx libyang context for logging
+ * @param[in] imp The import statement to process.
+ * @param[in] revisions_prefix Prefix of the ietf-yang-revisions import in the module. If NULL, the module
+ * is not imported by the module and only revision-date substatement is allowed.
+ * @param[out] revisions Return pointer to ([sized array](@ref sizedarrays)) of revision dates/labels restricting the imported module.
+ * @param[out] revision_or_derived Flag if the @p revisions come from revision-or-derived statement(s) so do not restrict import for
+ * the specific revision only but any revision derived from the specified one.
+ * @return LY_ERR values.
+ */
+static LY_ERR
+lys_import_get_revisions(struct ly_ctx *ctx, const struct lysp_import *imp, const char *revisions_prefix, const char ***revisions, int *revision_or_derived)
+{
+    LY_ERR ret = LY_SUCCESS;
+    LY_ARRAY_COUNT_TYPE i;
+    const char *prefix, *id, **rev;
+    size_t prefix_len;
+
+    /* init */
+    *revisions = NULL;
+    *revision_or_derived = 0;
+
+    if (revisions_prefix) {
+        LY_ARRAY_FOR(imp->exts, i) {
+            prefix = imp->exts[i].name;
+
+            /* locate extension's prefix */
+            id = strchr(prefix, ':');
+            if (!id) {
+                /* no prefix ?!? */
+                continue;
+            }
+
+            prefix_len = id - prefix;
+            id++;
+
+            if (!ly_strncmp(revisions_prefix, prefix, prefix_len) && !strcmp(id, "revision-or-derived")) {
+                if (!(*revisions) && imp->rev[0]) {
+                    /* import MUST NOT contain revision-or-date and revision-date */
+                    LOGVAL(ctx, LYVE_SEMANTICS,
+                            "The \"revision-date\" and \"ietf-yang-revisions:revision-or-derived\" statements must not be used together.");
+                    return LY_EVALID;
+                }
+                LY_ARRAY_NEW_GOTO(imp->module->ctx, *revisions, rev, ret, error);
+                *rev = imp->exts[i].argument;
+                *revision_or_derived = 1;
+            }
+        }
+    }
+
+    if (!(*revisions) && imp->rev[0]) {
+        LY_ARRAY_NEW_GOTO(imp->module->ctx, *revisions, rev, ret, error);
+        *rev = imp->rev;
+    }
+
+    return LY_SUCCESS;
+
+error:
+    LY_ARRAY_FREE(*revisions);
+    *revisions = NULL;
+    *revision_or_derived = 0;
+
+    return ret;
+}
+
 static LY_ERR
 lys_resolve_import_include(struct lys_parser_ctx *pctx, struct lysp_module *pmod, struct ly_set *new_mods)
 {
+    LY_ERR ret;
     struct lysp_import *imp;
     LY_ARRAY_COUNT_TYPE u, v;
+    const char *revisions_prefix = NULL;
+    const char **revisions;
+    int revision_or_derived = 0;
+
+    /* get know if the module utilize ietf-yang-revisions */
+    LY_ARRAY_FOR(pmod->imports, u) {
+        if (!strcmp(pmod->imports[u].name, "ietf-yang-revisions")) {
+            revisions_prefix = pmod->imports[u].prefix;
+            break;
+        }
+    }
 
     pmod->parsing = 1;
     LY_ARRAY_FOR(pmod->imports, u) {
         imp = &pmod->imports[u];
         if (!imp->module) {
-            LY_CHECK_RET(lys_parse_load(PARSER_CTX(pctx), imp->name, imp->rev[0] ? imp->rev : NULL, new_mods, &imp->module));
+            LY_CHECK_RET(lys_import_get_revisions(pmod->mod->ctx, imp, revisions_prefix, &revisions, &revision_or_derived))
+            ret = lys_parse_load(PARSER_CTX(pctx), imp->name, revisions, revision_or_derived, new_mods, &imp->module);
+            LY_ARRAY_FREE(revisions);
+            LY_CHECK_RET(ret);
 
             if (!imp->rev[0]) {
                 /* This module must be selected for the next similar
@@ -1273,6 +1357,7 @@ lys_parse_submodule(struct ly_ctx *ctx, struct ly_in *in, LYS_INFORMAT format, s
 
     /* make sure that the newest revision is at position 0 */
     lysp_sort_revisions(submod->revs);
+    LY_CHECK_GOTO(ret = lysp_check_revisions((const struct lysp_module *)submod), error);
 
     /* decide the latest revision */
     latest_sp = (struct lysp_submodule *)ly_ctx_get_submodule2_latest(submod->mod, submod->name);
@@ -1589,6 +1674,7 @@ lys_parse_in(struct ly_ctx *ctx, struct ly_in *in, LYS_INFORMAT format,
     lysp_sort_revisions(mod->parsed->revs);
     if (mod->parsed->revs) {
         LY_CHECK_GOTO(ret = lydict_insert(ctx, mod->parsed->revs[0].date, 0, &mod->revision), cleanup);
+        LY_CHECK_GOTO(ret = lysp_check_revisions(mod->parsed), cleanup);
     }
 
     /* decide the latest revision */

@@ -290,6 +290,27 @@ LY_ERR lysp_check_dup_identities(struct lys_parser_ctx *ctx, struct lysp_module 
 void lysp_sort_revisions(struct lysp_revision *revs);
 
 /**
+ * @brief Check correct use of ietf-yang-revisions:revision-label if present.
+ *
+ * @param[in] mod Parsed schema.
+ * @return LY_SUCCESS
+ * @return LY_EVALID
+ */
+LY_ERR lysp_check_revisions(const struct lysp_module *mod);
+
+/**
+ * @brief Check if the given label matches any of the mod's revision-labels.
+ *
+ * Follows ietf-yang-revision specification.
+ *
+ * @param[in] mod Parsed module containing complete revision history.
+ * @param[in] label The revision-label to match.
+ * @return LY_SUCCESS when the @p label matches one of the @p mod's revision-labels
+ * @return LY_ENOTFOUND in case the @p label is not found in @p mod's revision history
+ */
+LY_ERR lysp_match_revision(const struct lysp_module *mod, const char *label);
+
+/**
  * @brief Find type specified type definition.
  *
  * @param[in] id Name of the type including possible prefix. Module where the prefix is being searched is start_module.
@@ -318,14 +339,18 @@ LY_ERR lysp_check_enum_name(struct lys_parser_ctx *ctx, const char *name, size_t
  *
  * @param[in] ctx libyang context.
  * @param[in] name Name of the module to load.
- * @param[in] revision Optional revision of the module to load. If NULL, the newest revision is loaded.
+ * @param[in] revisions ([Sized array](@ref sizedarrays)) containing revision(s) of the module to load.
+ * If NULL, the newest revision is loaded. Revision can be either revision-date or revision-label(s) as defined by
+ * ietf-yang-revisions. The way how the restriction is applied is affected by @p revision_or_derived flag.
+ * @param[in] revision_or_derived Flag to apply @p revisions restriction. If set, not only the module of the required revision
+ * matches, but also the modules derived from such a revision (the revision is placed in the module's revisions history).
  * @param[in,out] new_mods Set of all the new mods added to the context. Includes this module and all of its imports.
  * @param[out] mod Created module structure.
  * @return LY_SUCCESS on success.
  * @return LY_ERR on error.
  */
-LY_ERR lys_parse_load(struct ly_ctx *ctx, const char *name, const char *revision, struct ly_set *new_mods,
-        struct lys_module **mod);
+LY_ERR lys_parse_load(struct ly_ctx *ctx, const char *name, const char **revisions, int revision_or_derived,
+        struct ly_set *new_mods, struct lys_module **mod);
 
 /**
  * @brief Parse included submodules into the simply parsed YANG module.

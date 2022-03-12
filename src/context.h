@@ -380,6 +380,9 @@ typedef void (*ly_module_imp_data_free_clb)(void *module_data, void *user_data);
  * When @p submod_name is provided, the submodule is requested instead of the module (in this case only
  * the module name without its revision is provided).
  *
+ * The revision restrictions requests for the specific (or latest) revision. For requesting the revision or
+ * derived module, as defined by ietf-yang-revisions, see ::ly_module_imp_clb.
+ *
  * If an @arg free_module_data callback is provided, it will be used later to free the allegedly const data
  * which were returned by this callback.
  *
@@ -400,7 +403,35 @@ typedef LY_ERR (*ly_module_imp_clb)(const char *mod_name, const char *mod_rev, c
         void *user_data, LYS_INFORMAT *format, const char **module_data, ly_module_imp_data_free_clb *free_module_data);
 
 /**
+ * @brief Callback for retrieving missing imported models in a custom way.
+ *
+ * This variant of the import callabck follows ietf-yang-versioning specification - it does not cover submodules, but the
+ * revision restriction is processed as revision-or-derived, so multiple revision dates/labels are allowed and the module
+ * matches the restriction in case the date/label is found in the module's revision history (it is derived from the requested
+ * revision).
+ *
+ * For an alternative, see ::ly_module_imp_clb.
+ *
+ * If an @arg free_module_data callback is provided, it will be used later to free the allegedly const data
+ * which were returned by this callback.
+ *
+ * @param[in] mod_name Missing module name.
+ * @param[in] mod_revs Optional ([sized array](@ref sizedarrays)) of the missing module's minimal revision date or label.
+ * If NULL, the latest revision is requested and the parsed module is then marked by the latest_revision flag.
+ * @param[in] user_data User-supplied callback data.
+ * @param[out] format Format of the returned module data.
+ * @param[out] module_data Requested module data.
+ * @param[out] free_module_data Callback for freeing the returned module data. If not set, the data will be left untouched.
+ * @return LY_ERR value. If the returned value differs from LY_SUCCESS, libyang continue in trying to get the module data
+ * according to the settings of its mechanism to search for the imported/included schemas.
+ */
+typedef LY_ERR (*ly_module_imp_derived_clb)(const char *mod_name, const char **mod_revs,
+        void *user_data, LYS_INFORMAT *format, const char **module_data, ly_module_imp_data_free_clb *free_module_data);
+
+/**
  * @brief Get the custom callback for missing import/include module retrieval.
+ *
+ * Note that there is an alternative import callback, see ::ly_ctx_get_module_imp_derived_clb().
  *
  * @param[in] ctx Context to read from.
  * @param[in] user_data Optional pointer for getting the user-supplied callback data.
@@ -409,15 +440,41 @@ typedef LY_ERR (*ly_module_imp_clb)(const char *mod_name, const char *mod_rev, c
 LIBYANG_API_DECL ly_module_imp_clb ly_ctx_get_module_imp_clb(const struct ly_ctx *ctx, void **user_data);
 
 /**
+ * @brief Get the custom callback for missing import module retrieval.
+ *
+ * Note that there is an alternative import callback, see ::ly_ctx_get_module_imp_clb().
+ *
+ * @param[in] ctx Context to read from.
+ * @param[in] user_data Optional pointer for getting the user-supplied callback data.
+ * @return Callback or NULL if not set.
+ */
+LIBYANG_API_DECL ly_module_imp_derived_clb ly_ctx_get_module_imp_derived_clb(const struct ly_ctx *ctx, void **user_data);
+
+/**
  * @brief Set missing include or import module callback. It is meant to be used when the models
  * are not locally available (such as when downloading modules from a NETCONF server), it should
  * not be required in other cases.
+ *
+ * Note that there is an alternative import callback, see ::ly_ctx_set_module_imp_derived_clb()
  *
  * @param[in] ctx Context that will use this callback.
  * @param[in] clb Callback responsible for returning the missing model.
  * @param[in] user_data Arbitrary data that will always be passed to the callback @p clb.
  */
 LIBYANG_API_DECL void ly_ctx_set_module_imp_clb(struct ly_ctx *ctx, ly_module_imp_clb clb, void *user_data);
+
+/**
+ * @brief Set missing import module callback. It is meant to be used when the models
+ * are not locally available (such as when downloading modules from a NETCONF server), it should
+ * not be required in other cases.
+ *
+ * Note that there is an alternative import callback, see ::ly_ctx_set_module_imp_clb()
+ *
+ * @param[in] ctx Context that will use this callback.
+ * @param[in] clb Callback responsible for returning the missing model.
+ * @param[in] user_data Arbitrary data that will always be passed to the callback @p clb.
+ */
+LIBYANG_API_DECL void ly_ctx_set_module_imp_derived_clb(struct ly_ctx *ctx, ly_module_imp_derived_clb clb, void *user_data);
 
 /**
  * @brief Callback for getting arbitrary run-time data required by an extension instance.
@@ -456,6 +513,19 @@ LIBYANG_API_DECL ly_ext_data_clb ly_ctx_set_ext_data_clb(struct ly_ctx *ctx, ly_
  * @return Pointer to the YANG module, NULL if no schema in the context follows the name and revision requirements.
  */
 LIBYANG_API_DECL struct lys_module *ly_ctx_get_module(const struct ly_ctx *ctx, const char *name, const char *revision);
+
+/**
+ * @brief Get module of the given name and derived from at least one of the provided revision dates or revision labels.
+ *
+ * This functions implements mechanism of resolving revision compatibility as defined in ietf-yang-revisions. If there
+ * are multiple modules satisfying the revisions limitations, the first matching module is returned.
+ *
+ * @param[in] ctx Context to work in.
+ * @param[in] name Name of the YANG module to get.
+ * @param[in] revisions ([Sized array](@ref sizedarrays)) of the minimal revision dates or revision labels of the requested module.
+ * @return Pointer to the YANG module, NULL if no schema in the context follows the name and revision requirements.
+ */
+LIBYANG_API_DECL struct lys_module *ly_ctx_get_module_derived(const struct ly_ctx *ctx, const char *name, const char **revisions);
 
 /**
  * @brief Get the latest revision of the YANG module specified by its name.
