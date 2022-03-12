@@ -46,6 +46,26 @@ void *ly_realloc(void *ptr, size_t size);
  */
 
 /**
+ * @brief Simply define static ([sized array](@ref sizedarrays)).
+ *
+ * The array is created empty, but with the set size (no manual increase required).
+ * The only thing to do is to assign specific values into the array items (NAME[X] = ...).
+ *
+ * Note that the static array cannot be used in cases when the code can try to reallocate the array.
+ *
+ * @param[in,out] NAME Variable name holding the array.
+ * @param[in] TYPE Type of the items in the array, the array itself is a pointer to this type.
+ * @param[in] SIZE Number of items in the array, the values are not assigned.
+ * @param[in] DATA Content to initiate the array.
+ */
+#define LY_ARRAY_STATIC(NAME, TYPE, SIZE, DATA) \
+    struct { \
+        LY_ARRAY_COUNT_TYPE c; \
+        TYPE items[SIZE]; \
+    } __ly_array_NAME = {.c = SIZE, .items = DATA}; \
+    TYPE *NAME = &__ly_array_NAME.items[0];
+
+/**
  * @brief (Re-)Allocation of a ([sized array](@ref sizedarrays)).
  *
  * Increases the size information.
