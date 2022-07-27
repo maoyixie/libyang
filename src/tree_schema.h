@@ -1,9 +1,10 @@
 /**
  * @file tree_schema.h
  * @author Radek Krejci <rkrejci@cesnet.cz>
+ * @author Michal Vasko <mvasko@cesnet.cz>
  * @brief libyang representation of YANG schema trees.
  *
- * Copyright (c) 2015 - 2018 CESNET, z.s.p.o.
+ * Copyright (c) 2015 - 2022 CESNET, z.s.p.o.
  *
  * This source code is licensed under BSD 3-Clause License (the "License").
  * You may not use this file except in compliance with the License.
@@ -1599,11 +1600,9 @@ struct lysc_type_leafref {
     struct lyplg_type *plugin;       /**< type's plugin with built-in as well as user functions to canonize or validate the value of the type */
     LY_DATA_TYPE basetype;           /**< Base type of the type */
     uint32_t refcount;               /**< reference counter for type sharing */
-    struct lyxp_expr *path;          /**< parsed target path, compiled path cannot be stored because of type sharing */
-    struct lysc_prefix *prefixes;    /**< resolved prefixes used in the path */
-    const struct lys_module *cur_mod;/**< unused, not needed */
-    struct lysc_type *realtype;      /**< pointer to the real (first non-leafref in possible leafrefs chain) type. */
     uint8_t require_instance;        /**< require-instance flag */
+    struct ly_path *path;            /**< compiled target path */
+    struct lysc_type *realtype;      /**< pointer to the real type (first non-leafref in possible leafrefs chain) */
 };
 
 struct lysc_type_identityref {

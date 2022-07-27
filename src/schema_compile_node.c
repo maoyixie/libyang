@@ -28,6 +28,7 @@
 #include "compat.h"
 #include "dict.h"
 #include "log.h"
+#include "path.h"
 #include "plugins.h"
 #include "plugins_exts_compile.h"
 #include "plugins_internal.h"
@@ -109,7 +110,8 @@ error:
 }
 
 static LY_ERR
-lysc_unres_leafref_add(struct lysc_ctx *ctx, struct lysc_node_leaf *leaf, const struct lysp_module *local_mod)
+lysc_unres_leafref_add(struct lysc_ctx *ctx, struct lysc_node_leaf *leaf, const struct lyxp_expr *path,
+        const struct lysp_module *local_mod)
 {
     struct lysc_unres_leafref *l = NULL;
     struct ly_set *leafrefs_set;
@@ -143,6 +145,7 @@ lysc_unres_leafref_add(struct lysc_ctx *ctx, struct lysc_node_leaf *leaf, const 
         LY_CHECK_ERR_RET(!l, LOGMEM(ctx->ctx), LY_EMEM);
 
         l->node = &leaf->node;
+        l->path = path;
         l->local_mod = local_mod;
 
         LY_CHECK_ERR_RET(ly_set_add(leafrefs_set, l, 1, NULL), free(l); LOGMEM(ctx->ctx), LY_EMEM);
@@ -1546,8 +1549,8 @@ done:
 }
 
 static LY_ERR
-lys_compile_type_union(struct lysc_ctx *ctx, struct lysp_type *ptypes, struct lysp_node *context_pnode, uint16_t context_flags,
-        const char *context_name, struct lysc_type ***utypes_p)
+lys_compile_type_union(struct lysc_ctx *ctx, struct lysp_type *ptypes, const struct lysc_node *ctx_node,
+        struct lysp_node *ctx_pnode, uint16_t ctx_flags, const char *ctx_name, struct lysc_type ***utypes_p)
 {
     LY_ERR ret = LY_SUCCESS;
     struct lysc_type **utypes = *utypes_p;
@@ -1555,7 +1558,7 @@ lys_compile_type_union(struct lysc_ctx *ctx, struct lysp_type *ptypes, struct ly
 
     LY_ARRAY_CREATE_GOTO(ctx->ctx, utypes, LY_ARRAY_COUNT(ptypes), ret, error);
     for (LY_ARRAY_COUNT_TYPE u = 0, additional = 0; u < LY_ARRAY_COUNT(ptypes); ++u) {
-        ret = lys_compile_type(ctx, context_pnode, context_flags, context_name, &ptypes[u], &utypes[u + additional],
+        ret = lys_compile_type(ctx, ctx_node, ctx_pnode, ctx_flags, ctx_name, &ptypes[u], &utypes[u + additional],
                 NULL, NULL);
         LY_CHECK_GOTO(ret, error);
         if (utypes[u + additional]->basetype == LY_TYPE_UNION) {
@@ -1575,13 +1578,10 @@ lys_compile_type_union(struct lysc_ctx *ctx, struct lysp_type *ptypes, struct ly
                     lref = (struct lysc_type_leafref *)utypes[u + additional];
 
                     lref->basetype = LY_TYPE_LEAFREF;
-                    ret = lyxp_expr_dup(ctx->ctx, ((struct lysc_type_leafref *)un_aux->types[v])->path, &lref->path);
+                    ret = ly_path_dup(ctx->ctx, ((struct lysc_type_leafref *)un_aux->types[v])->path, &lref->path);
                     LY_CHECK_GOTO(ret, error);
                     lref->refcount = 1;
                     lref->require_instance = ((struct lysc_type_leafref *)un_aux->types[v])->require_instance;
-                    ret = lyplg_type_prefix_data_dup(ctx->ctx, LY_VALUE_SCHEMA_RESOLVED,
-                            ((struct lysc_type_leafref *)un_aux->types[v])->prefixes, (void **)&lref->prefixes);
-                    LY_CHECK_GOTO(ret, error);
                     /* TODO extensions */
 
                 } else {
@@ -1616,9 +1616,10 @@ error:
 /**
  * @brief The core of the lys_compile_type() - compile information about the given type (from typedef or leaf/leaf-list).
  * @param[in] ctx Compile context.
- * @param[in] context_pnode Schema node where the type/typedef is placed to correctly find the base types.
- * @param[in] context_flags Flags of the context node or the referencing typedef to correctly check status of referencing and referenced objects.
- * @param[in] context_name Name of the context node or referencing typedef for logging.
+ * @param[in] ctx_node Compiled schema node for compiling leafref.
+ * @param[in] ctx_pnode Parsed schema node where the type/typedef is placed to correctly find the base types.
+ * @param[in] ctx_flags Flags of the context node or the referencing typedef to correctly check status of referencing and referenced objects.
+ * @param[in] ctx_name Name of the context node or referencing typedef for logging.
  * @param[in] type_p Parsed type to compile.
  * @param[in] basetype Base YANG built-in type of the type to compile.
  * @param[in] tpdfname Name of the type's typedef, serves as a flag - if it is leaf/leaf-list's type, it is NULL.
@@ -1627,8 +1628,9 @@ error:
  * @return LY_ERR value.
  */
 static LY_ERR
-lys_compile_type_(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_t context_flags, const char *context_name,
-        struct lysp_type *type_p, LY_DATA_TYPE basetype, const char *tpdfname, struct lysc_type *base, struct lysc_type **type)
+lys_compile_type_(struct lysc_ctx *ctx, const struct lysc_node *ctx_node, struct lysp_node *ctx_pnode, uint16_t ctx_flags,
+        const char *ctx_name, struct lysp_type *type_p, LY_DATA_TYPE basetype, const char *tpdfname,
+        struct lysc_type *base, struct lysc_type **type)
 {
     LY_ERR ret = LY_SUCCESS;
     struct lysc_type_bin *bin;
@@ -1826,15 +1828,12 @@ lys_compile_type_(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_
             lref->require_instance = 1;
         }
         if (type_p->path) {
-            LY_VALUE_FORMAT format;
-
-            LY_CHECK_RET(lyxp_expr_dup(ctx->ctx, type_p->path, &lref->path));
-            LY_CHECK_RET(lyplg_type_prefix_data_new(ctx->ctx, type_p->path->expr, strlen(type_p->path->expr),
-                    LY_VALUE_SCHEMA, type_p->pmod, &format, (void **)&lref->prefixes));
+            assert(!lref->path);
+            LY_CHECK_RET(ly_path_compile_leafref(ctx->ctx, ctx_node, NULL, type_p->path,
+                    (ctx_node->flags & LYS_IS_OUTPUT) ? LY_PATH_OPER_OUTPUT : LY_PATH_OPER_INPUT, LY_PATH_TARGET_MANY,
+                    LY_VALUE_SCHEMA, (void *)type_p->pmod, &lref->path));
         } else if (base) {
-            LY_CHECK_RET(lyxp_expr_dup(ctx->ctx, ((struct lysc_type_leafref *)base)->path, &lref->path));
-            LY_CHECK_RET(lyplg_type_prefix_data_dup(ctx->ctx, LY_VALUE_SCHEMA_RESOLVED,
-                    ((struct lysc_type_leafref *)base)->prefixes, (void **)&lref->prefixes));
+            LY_CHECK_RET(ly_path_dup(ctx->ctx, ((struct lysc_type_leafref *)base)->path, &lref->path));
         } else if (tpdfname) {
             LOGVAL(ctx->ctx, LY_VCODE_MISSCHILDSTMT, "path", "leafref type ", tpdfname);
             return LY_EVALID;
@@ -1870,7 +1869,7 @@ lys_compile_type_(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_
                 return LY_EVALID;
             }
             /* compile the type */
-            LY_CHECK_RET(lys_compile_type_union(ctx, type_p->types, context_pnode, context_flags, context_name, &un->types));
+            LY_CHECK_RET(lys_compile_type_union(ctx, type_p->types, ctx_node, ctx_pnode, ctx_flags, ctx_name, &un->types));
         }
 
         if (!base && !type_p->flags) {
@@ -1951,8 +1950,8 @@ cleanup:
 }
 
 LY_ERR
-lys_compile_type(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_t context_flags, const char *context_name,
-        struct lysp_type *type_p, struct lysc_type **type, const char **units, struct lysp_qname **dflt)
+lys_compile_type(struct lysc_ctx *ctx, const struct lysc_node *ctx_node, struct lysp_node *ctx_pnode, uint16_t ctx_flags,
+        const char *ctx_name, struct lysp_type *type_p, struct lysc_type **type, const char **units, struct lysp_qname **dflt)
 {
     LY_ERR ret = LY_SUCCESS;
     ly_bool dummyloops = 0;
@@ -1972,7 +1971,7 @@ lys_compile_type(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_t
 
     tctx = calloc(1, sizeof *tctx);
     LY_CHECK_ERR_RET(!tctx, LOGMEM(ctx->ctx), LY_EMEM);
-    for (ret = lysp_type_find(type_p->name, context_pnode, type_p->pmod, &basetype, &tctx->tpdf, &tctx->node);
+    for (ret = lysp_type_find(type_p->name, ctx_pnode, type_p->pmod, &basetype, &tctx->tpdf, &tctx->node);
             ret == LY_SUCCESS;
             ret = lysp_type_find(tctx_prev->tpdf->type.name, tctx_prev->node, tctx_prev->tpdf->type.pmod,
                     &basetype, &tctx->tpdf, &tctx->node)) {
@@ -1981,7 +1980,7 @@ lys_compile_type(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_t
         }
 
         /* check status */
-        ret = lysc_check_status(ctx, context_flags, (void *)type_p->pmod, context_name, tctx->tpdf->flags,
+        ret = lysc_check_status(ctx, ctx_flags, (void *)type_p->pmod, ctx_name, tctx->tpdf->flags,
                 (void *)tctx->tpdf->type.pmod, tctx->node ? tctx->node->name : tctx->tpdf->name);
         LY_CHECK_ERR_GOTO(ret, free(tctx), cleanup);
 
@@ -2174,7 +2173,7 @@ preparenext:
 
         /* compile the new typedef */
         prev_type = *type;
-        ret = lys_compile_type_(ctx, tctx->node, tctx->tpdf->flags, tctx->tpdf->name,
+        ret = lys_compile_type_(ctx, ctx_node, tctx->node, tctx->tpdf->flags, tctx->tpdf->name,
                 &((struct lysp_tpdf *)tctx->tpdf)->type, basetype, tctx->tpdf->name, base, type);
         LY_CHECK_GOTO(ret, cleanup);
         base = prev_type;
@@ -2188,7 +2187,7 @@ preparenext:
         (*type)->basetype = basetype;
         (*type)->plugin = base ? base->plugin : lyplg_find(LYPLG_TYPE, "", NULL, ly_data_type2str[basetype]);
         LY_ATOMIC_INC_BARRIER((*type)->refcount);
-        ret = lys_compile_type_(ctx, context_pnode, context_flags, context_name, type_p, basetype, NULL, base, type);
+        ret = lys_compile_type_(ctx, ctx_node, ctx_pnode, ctx_flags, ctx_name, type_p, basetype, NULL, base, type);
         LY_CHECK_GOTO(ret, cleanup);
     } else if ((basetype != LY_TYPE_BOOL) && (basetype != LY_TYPE_EMPTY)) {
         /* no specific restriction in leaf's type definition, copy from the base */
@@ -2835,7 +2834,7 @@ lys_compile_node_type(struct lysc_ctx *ctx, struct lysp_node *context_node, stru
     LY_ARRAY_COUNT_TYPE u, count;
     ly_bool in_unres = 0;
 
-    LY_CHECK_RET(lys_compile_type(ctx, context_node, leaf->flags, leaf->name, type_p, &leaf->type,
+    LY_CHECK_RET(lys_compile_type(ctx, &leaf->node, context_node, leaf->flags, leaf->name, type_p, &leaf->type,
             leaf->units ? NULL : &leaf->units, &dflt));
 
     /* store default value, if any */
@@ -2844,7 +2843,7 @@ lys_compile_node_type(struct lysc_ctx *ctx, struct lysp_node *context_node, stru
     }
 
     /* store leafref(s) to be resolved */
-    LY_CHECK_RET(lysc_unres_leafref_add(ctx, leaf, type_p->pmod));
+    LY_CHECK_RET(lysc_unres_leafref_add(ctx, leaf, type_p->path, type_p->pmod));
 
     /* type-specific checks */
     if (leaf->type->basetype == LY_TYPE_UNION) {

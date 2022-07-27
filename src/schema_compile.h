@@ -96,7 +96,8 @@ struct lysc_unres_must {
  * @brief Structure for storing leafref node and its local module.
  */
 struct lysc_unres_leafref {
-    struct lysc_node *node;     /**< leaf/leaf-list node with leafref type */
+    struct lysc_node *node;                 /**< leaf/leaf-list node with leafref type */
+    const struct lyxp_expr *path;           /**< parsed path to the leafref target */
     const struct lysp_module *local_mod;    /**< local module of the leafref type */
 };
 

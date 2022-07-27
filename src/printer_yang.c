@@ -26,6 +26,7 @@
 #include "log.h"
 #include "out.h"
 #include "out_internal.h"
+#include "path.h"
 #include "plugins_exts.h"
 #include "plugins_exts_print.h"
 #include "plugins_types.h"
@@ -947,8 +948,11 @@ yprc_type(struct lys_ypr_ctx *pctx, const struct lysc_type *type)
     }
     case LY_TYPE_LEAFREF: {
         struct lysc_type_leafref *lr = (struct lysc_type_leafref *)type;
+        char *path;
         ypr_open(pctx->out, &flag);
-        ypr_substmt(pctx, LY_STMT_PATH, 0, lr->path->expr, lr->exts);
+        path = lysc_path(lr->path[LY_ARRAY_COUNT(lr->path) - 1].node, LYSC_PATH_DATA, NULL, 0);
+        ypr_substmt(pctx, LY_STMT_PATH, 0, path, lr->exts);
+        free(path);
         ypr_substmt(pctx, LY_STMT_REQUIRE_INSTANCE, 0, lr->require_instance ? "true" : "false", lr->exts);
         yprc_type(pctx, lr->realtype);
         break;

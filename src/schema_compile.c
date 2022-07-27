@@ -647,8 +647,8 @@ lys_compile_extension_instance(struct lysc_ctx *ctx, const struct lysp_ext_insta
 
                     r = lysp_stmt_parse(ctx, stmt, &parsed, NULL);
                     LY_CHECK_ERR_GOTO(r, ret = r, cleanup);
-                    r = lys_compile_type(ctx, NULL, flags ? *flags : 0, ext_p->name, parsed, (struct lysc_type **)compiled,
-                            units && !*units ? units : NULL, NULL);
+                    r = lys_compile_type(ctx, NULL, NULL, flags ? *flags : 0, ext_p->name, parsed,
+                            (struct lysc_type **)compiled, units && !*units ? units : NULL, NULL);
                     lysp_type_free(ctx->ctx, parsed);
                     free(parsed);
                     LY_CHECK_ERR_GOTO(r, ret = r, cleanup);
@@ -1088,6 +1088,7 @@ lys_compile_unres_disabled_bitenum(struct lysc_ctx *ctx, struct lysc_node_leaf *
  *
  * @param[in] ctx Compile context.
  * @param[in] node Context node for the leafref.
+ * @param[in] path Parsed leafref target path.
  * @param[in] lref Leafref to check/resolve.
  * @param[in] local_mod Local module for the leafref type.
  * @param[in,out] unres Global unres structure.
@@ -1095,32 +1096,30 @@ lys_compile_unres_disabled_bitenum(struct lysc_ctx *ctx, struct lysc_node_leaf *
  * @return LY_ERR value.
  */
 static LY_ERR
-lys_compile_unres_leafref(struct lysc_ctx *ctx, const struct lysc_node *node, struct lysc_type_leafref *lref,
-        const struct lysp_module *local_mod, struct lys_glob_unres *unres)
+lys_compile_unres_leafref(struct lysc_ctx *ctx, const struct lysc_node *node, const struct lyxp_expr *path,
+        struct lysc_type_leafref *lref, const struct lysp_module *local_mod, struct lys_glob_unres *unres)
 {
-    const struct lysc_node *target = NULL;
-    struct ly_path *p;
+    const struct lysc_node *target;
+    struct ly_path *p = NULL;
     struct lysc_type *type;
     uint16_t flg;
 
     assert(node->nodetype & (LYS_LEAF | LYS_LEAFLIST));
 
     /* first implement all the modules in the path */
-    LY_CHECK_RET(lys_compile_expr_implement(ctx->ctx, lref->path, LY_VALUE_SCHEMA_RESOLVED, lref->prefixes, 1, unres, NULL));
+    LY_CHECK_RET(lys_compile_expr_implement(ctx->ctx, path, LY_VALUE_SCHEMA, (void *)local_mod, 1, unres, NULL));
 
     /* try to find the target, current module is that of the context node (RFC 7950 6.4.1 second bullet) */
-    LY_CHECK_RET(ly_path_compile_leafref(ctx->ctx, node, NULL, lref->path,
+    LY_CHECK_RET(ly_path_compile_leafref(ctx->ctx, node, NULL, path,
             (node->flags & LYS_IS_OUTPUT) ? LY_PATH_OPER_OUTPUT : LY_PATH_OPER_INPUT, LY_PATH_TARGET_MANY,
-            LY_VALUE_SCHEMA_RESOLVED, lref->prefixes, &p));
+            LY_VALUE_SCHEMA, (void *)local_mod, &p));
 
     /* get the target node */
     target = p[LY_ARRAY_COUNT(p) - 1].node;
-    ly_path_free(node->module->ctx, p);
-
-    if (!(target->nodetype & (LYS_LEAF | LYS_LEAFLIST))) {
+    if (!(target->nodetype & LYD_NODE_TERM)) {
         LOGVAL(ctx->ctx, LYVE_REFERENCE, "Invalid leafref path \"%s\" - target node is %s instead of leaf or leaf-list.",
-                lref->path->expr, lys_nodetype2str(target->nodetype));
-        return LY_EVALID;
+                path->expr, lys_nodetype2str(target->nodetype));
+        goto error;
     }
 
     /* check status */
@@ -1135,7 +1134,7 @@ lys_compile_unres_leafref(struct lysc_ctx *ctx, const struct lysc_node *node, st
         flg = LYS_STATUS_CURR;
     }
     if (lysc_check_status(ctx, flg, local_mod->mod, node->name, target->flags, target->module, target->name)) {
-        return LY_EVALID;
+        goto error;
     }
     ctx->path_len = 1;
     ctx->path[1] = '\0';
@@ -1144,8 +1143,8 @@ lys_compile_unres_leafref(struct lysc_ctx *ctx, const struct lysc_node *node, st
     if (lref->require_instance) {
         if ((node->flags & LYS_CONFIG_W) && (target->flags & LYS_CONFIG_R)) {
             LOGVAL(ctx->ctx, LYVE_REFERENCE, "Invalid leafref path \"%s\" - target is supposed"
-                    " to represent configuration data (as the leafref does), but it does not.", lref->path->expr);
-            return LY_EVALID;
+                    " to represent configuration data (as the leafref does), but it does not.", path->expr);
+            goto error;
         }
     }
 
@@ -1156,15 +1155,21 @@ lys_compile_unres_leafref(struct lysc_ctx *ctx, const struct lysc_node *node, st
         if (type == (struct lysc_type *)lref) {
             /* circular chain detected */
             LOGVAL(ctx->ctx, LYVE_REFERENCE, "Invalid leafref path \"%s\" - circular chain of leafrefs detected.",
-                    lref->path->expr);
-            return LY_EVALID;
+                    path->expr);
+            goto error;
         }
     }
 
-    /* store the type */
+    /* store the type, not realtype yet */
+    lref->path = p;
     lref->realtype = ((struct lysc_node_leaf *)target)->type;
     ++lref->realtype->refcount;
+
     return LY_SUCCESS;
+
+error:
+    ly_path_free(ctx->ctx, p);
+    return LY_EVALID;
 }
 
 /**
@@ -1402,7 +1407,7 @@ resolve_all:
         LOG_LOCSET(l->node, NULL, NULL, NULL);
         v = 0;
         while ((ret == LY_SUCCESS) && (lref = lys_type_leafref_next(l->node, &v))) {
-            ret = lys_compile_unres_leafref(&cctx, l->node, lref, l->local_mod, unres);
+            ret = lys_compile_unres_leafref(&cctx, l->node, l->path, lref, l->local_mod, unres);
         }
         LOG_LOCBACK(1, 0, 0, 0);
         LY_CHECK_RET(ret);
@@ -1418,7 +1423,7 @@ resolve_all:
 
         v = 0;
         while ((ret == LY_SUCCESS) && (lref = lys_type_leafref_next(l->node, &v))) {
-            ret = lys_compile_unres_leafref(&cctx, l->node, lref, l->local_mod, unres);
+            ret = lys_compile_unres_leafref(&cctx, l->node, l->path, lref, l->local_mod, unres);
         }
 
         LOG_LOCBACK(1, 0, 0, 0);
@@ -1538,9 +1543,9 @@ resolve_all:
 
         v = 0;
         while ((lref = lys_type_leafref_next(l->node, &v))) {
-            ret = ly_path_compile_leafref(cctx.ctx, l->node, NULL, lref->path,
+            ret = ly_path_compile_leafref(cctx.ctx, l->node, NULL, l->path,
                     (l->node->flags & LYS_IS_OUTPUT) ? LY_PATH_OPER_OUTPUT : LY_PATH_OPER_INPUT, LY_PATH_TARGET_MANY,
-                    LY_VALUE_SCHEMA_RESOLVED, lref->prefixes, &path);
+                    LY_VALUE_SCHEMA, (void *)l->local_mod, &path);
             ly_path_free(l->node->module->ctx, path);
 
             assert(ret != LY_ERECOMPILE);

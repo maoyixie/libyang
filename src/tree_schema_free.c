@@ -19,6 +19,7 @@
 #include "compat.h"
 #include "dict.h"
 #include "log.h"
+#include "path.h"
 #include "plugins_exts.h"
 #include "plugins_types.h"
 #include "tree.h"
@@ -787,8 +788,7 @@ lysc_type_free(struct ly_ctx *ctx, struct lysc_type *type)
         FREE_ARRAY(ctx, ((struct lysc_type_union *)type)->types, lysc_type2_free);
         break;
     case LY_TYPE_LEAFREF:
-        lyxp_expr_free(ctx, ((struct lysc_type_leafref *)type)->path);
-        ly_free_prefix_data(LY_VALUE_SCHEMA_RESOLVED, ((struct lysc_type_leafref *)type)->prefixes);
+        ly_path_free(ctx, ((struct lysc_type_leafref *)type)->path);
         lysc_type_free(ctx, ((struct lysc_type_leafref *)type)->realtype);
         break;
     case LY_TYPE_INST:

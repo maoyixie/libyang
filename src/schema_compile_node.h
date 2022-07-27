@@ -70,17 +70,18 @@ LY_ERR lys_compile_type_patterns(struct lysc_ctx *ctx, struct lysp_restr *patter
  * @brief Compile information about the leaf/leaf-list's type.
  *
  * @param[in] ctx Compile context.
- * @param[in] context_pnode Schema node where the type/typedef is placed to correctly find the base types.
- * @param[in] context_flags Flags of the context node or the referencing typedef to correctly check status of referencing and referenced objects.
- * @param[in] context_name Name of the context node or referencing typedef for logging.
+ * @param[in] ctx_node Compiled schema node for compiling leafref.
+ * @param[in] ctx_pnode Parsed cchema node where the type/typedef is placed to correctly find the base types.
+ * @param[in] ctx_flags Flags of the context node or the referencing typedef to correctly check status of referencing and referenced objects.
+ * @param[in] ctx_name Name of the context node or referencing typedef for logging.
  * @param[in] type_p Parsed type to compile.
  * @param[out] type Newly created (or reused with increased refcount) type structure with the filled information about the type.
  * @param[out] units Storage for inheriting units value from the typedefs the current type derives from.
  * @param[out] dflt Default value for the type.
  * @return LY_ERR value.
  */
-LY_ERR lys_compile_type(struct lysc_ctx *ctx, struct lysp_node *context_pnode, uint16_t context_flags,
-        const char *context_name, struct lysp_type *type_p, struct lysc_type **type, const char **units,
+LY_ERR lys_compile_type(struct lysc_ctx *ctx, const struct lysc_node *ctx_node, struct lysp_node *ctx_pnode,
+        uint16_t ctx_flags, const char *ctx_name, struct lysp_type *type_p, struct lysc_type **type, const char **units,
         struct lysp_qname **dflt);
 
 /**
