@@ -1,5 +1,5 @@
 if(ENABLE_FUZZ_TARGETS)
-    set(fuzz_targets lys_parse_mem lyd_parse_mem_xml lyd_parse_mem_json yang_parse_module)
+    set(fuzz_targets lys_parse_mem lyd_parse_mem_xml lyd_parse_mem_json yang_parse_module lyd_parse_data_mem)
 
     if(FUZZER STREQUAL "AFL")
         foreach(target_name IN LISTS fuzz_targets)
@@ -17,7 +17,7 @@ endif()
 
 if(ENABLE_TESTS)
     add_executable(fuzz_regression_test fuzz_regression_test.c)
-    set(fuzz_regression_tests lys_parse_mem lyd_parse_mem_xml lyd_parse_mem_json)
+    set(fuzz_regression_tests lys_parse_mem lyd_parse_mem_xml lyd_parse_mem_json lyd_parse_data_mem)
     foreach(target_name IN LISTS fuzz_regression_tests)
         file(COPY ${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/${target_name} DESTINATION ${CMAKE_BINARY_DIR}/tests/fuzz/)
         add_executable(regress_fuzz_${target_name} ${target_name}.c main.c)
